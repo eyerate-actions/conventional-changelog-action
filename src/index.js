@@ -41,11 +41,14 @@ async function run() {
     const skipVersionFile = core.getBooleanInput('skip-version-file')
     const skipCommit = core.getBooleanInput('skip-commit')
     const skipEmptyRelease = core.getBooleanInput('skip-on-empty')
+    const skipTag = core.getBooleanInput('skip-tag')
     const conventionalConfigFile = core.getInput('config-file-path')
     const preChangelogGenerationFile = core.getInput('pre-changelog-generation')
     const gitUrl = core.getInput('git-url')
+    const gitPath = core.getInput('git-path')
     const skipCi = core.getBooleanInput('skip-ci')
     const createSummary = core.getBooleanInput('create-summary')
+    const prerelease = core.getBooleanInput('pre-release')
 
     if (skipCi) {
       gitCommitMessage += ' [skip ci]'
@@ -63,6 +66,7 @@ async function run() {
     core.info(`Using "${conventionalConfigFile}" as config file`)
     core.info(`Using "${gitUrl}" as gitUrl`)
     core.info(`Using "${gitBranch}" as gitBranch`)
+    core.info(`Using "${gitPath}" as gitPath`)
 
     if (preCommitFile) {
       core.info(`Using "${preCommitFile}" as pre-commit script`)
@@ -82,7 +86,7 @@ async function run() {
 
     const config = conventionalConfigFile && requireScript(conventionalConfigFile)
 
-    conventionalRecommendedBump({ preset, tagPrefix, config }, async (error, recommendation) => {
+    conventionalRecommendedBump({ preset, tagPrefix, config, skipUnstable: !prerelease }, async (error, recommendation) => {
       if (error) {
         core.setFailed(error.message)
         return
@@ -96,6 +100,7 @@ async function run() {
       }
 
       let newVersion
+      let oldVersion
 
       // If skipVersionFile or skipCommit is true we use GIT to determine the new version because
       // skipVersionFile can mean there is no version file and skipCommit can mean that the user
@@ -110,6 +115,7 @@ async function run() {
         )
 
         newVersion = versioning.newVersion
+        oldVersion = versioning.oldVersion
 
       } else {
         const files = versionFile.split(',').map((f) => f.trim())
@@ -125,6 +131,7 @@ async function run() {
         )
 
         newVersion = versioning[0].newVersion
+        oldVersion = versioning[0].oldVersion
       }
 
       let gitTag = `${tagPrefix}${newVersion}`
@@ -144,7 +151,7 @@ async function run() {
       }
 
       // Generate the string changelog
-      const stringChangelog = await changelog.generateStringChangelog(tagPrefix, preset, newVersion, 1, config)
+      const stringChangelog = await changelog.generateStringChangelog(tagPrefix, preset, newVersion, 1, config, gitPath, !prerelease)
       core.info('Changelog generated')
       core.info(stringChangelog)
 
@@ -153,6 +160,7 @@ async function run() {
 
       if (skipEmptyRelease && cleanChangelog === '') {
         core.info('Generated changelog is empty and skip-on-empty has been activated so we skip this step')
+        core.setOutput('version', oldVersion)
         core.setOutput('skipped', 'true')
         return
       }
@@ -162,7 +170,7 @@ async function run() {
       // If output file === 'false' we don't write it to file
       if (outputFile !== 'false') {
         // Generate the changelog
-        await changelog.generateFileChangelog(tagPrefix, preset, newVersion, outputFile, releaseCount, config)
+        await changelog.generateFileChangelog(tagPrefix, preset, newVersion, outputFile, releaseCount, config, gitPath)
       }
 
       if (!skipCommit) {
@@ -184,7 +192,10 @@ async function run() {
       }
 
       // Create the new tag
-      await git.createTag(gitTag)
+      if (!skipTag)
+        await git.createTag(gitTag)
+      else
+        core.info('We not going to the tag the GIT changes')
 
       if (gitPush) {
         try {
@@ -235,5 +246,11 @@ async function run() {
     core.setFailed(error)
   }
 }
+
+process.on('unhandledRejection', (reason, promise) => {
+  let error = `Unhandled Rejection occurred. ${reason.stack}`
+  console.error(error)
+  core.setFailed(error)
+});
 
 run()
